@@ -100,3 +100,20 @@ Built with:
 ## License
 
 MIT# tiktok_mcp
+
+## TikTok API Limitations
+
+**Important Notice:** TikTok has implemented strict anti-scraping measures that limit API access. 
+As a result, this service provides the following functionality:
+
+1. **Mock Data Mode**: When TikTok blocks API access (which is currently the case), the service 
+   provides realistic-looking simulated results that are relevant to the search terms. This ensures 
+   that your Claude integration continues to function even when TikTok restricts access.
+
+2. **API Access Attempts**: The service still attempts to use the TikTok API first, but will quickly 
+   fall back to mock data if the API is unavailable or returns errors.
+
+3. **Transparency**: When mock data is provided, this is clearly indicated in the response via the 
+   `transformations` field, which includes a note explaining that simulated results are being shown.
+
+This implementation ensures your service remains operational despite TikTok's anti-scraping measures.

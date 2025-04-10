@@ -38,6 +38,48 @@ logger = logging.getLogger(__name__)
 # Initialize TikTok client
 tiktok_client = TikTokClient()
 
+# Run a health check at startup
+async def run_startup_health_check():
+    """Run a health check when the service starts up"""
+    logger.info("Running startup health check")
+    
+    api_working = False
+    http_working = False
+    mock_working = False
+    
+    # Check if API initialization works
+    try:
+        success = await tiktok_client._init_api()
+        api_working = success and tiktok_client.api is not None
+        logger.info(f"API initialization {'succeeded' if api_working else 'failed'}")
+    except Exception as e:
+        logger.error(f"API initialization error: {str(e)}")
+    
+    # Check if HTTP search works
+    try:
+        videos = await tiktok_client.search_videos_http("#test", count=1)
+        http_working = len(videos) > 0
+        logger.info(f"HTTP search {'returned results' if http_working else 'did not return results'}")
+    except Exception as e:
+        logger.error(f"HTTP search error: {str(e)}")
+    
+    # Check if mock data works
+    try:
+        videos = await tiktok_client.get_mock_search_results("test", count=1)
+        mock_working = len(videos) > 0
+        logger.info(f"Mock data {'generated successfully' if mock_working else 'generation failed'}")
+    except Exception as e:
+        logger.error(f"Mock data error: {str(e)}")
+    
+    # Log overall service status
+    if api_working or http_working or mock_working:
+        if mock_working:
+            logger.info("Service is operational with mock data capability")
+        else:
+            logger.warning("Service is partially operational but mock data is not working")
+    else:
+        logger.critical("Service is not operational - all search methods failed")
+
 @asynccontextmanager
 async def lifespan(server: Server) -> AsyncIterator[Dict[str, Any]]:
     """Manage server startup and shutdown lifecycle."""
@@ -69,13 +111,31 @@ mcp = FastMCP(
 @mcp.resource("status://health")
 async def get_health_status() -> Tuple[str, str]:
     """Get the current health status of the service"""
+    # Test API and HTTP methods
+    api_status = "initialized" if tiktok_client.api else "not_initialized"
+    http_test = None
+    
+    try:
+        if not tiktok_client.api:
+            # Try HTTP method if API not initialized
+            test_videos = await tiktok_client.search_videos_http("#test", count=1)
+            http_test = "success" if test_videos else "failed"
+    except Exception as e:
+        http_test = f"error: {str(e)}"
+    
     status = {
         "status": "running",
         "api_initialized": tiktok_client.api is not None,
+        "api_status": api_status,
+        "http_fallback_status": http_test,
+        "environment": {
+            "ms_token_available": bool(os.environ.get("ms_token")),
+            "python_version": sys.version,
+            "cwd": os.getcwd()
+        },
         "service": {
             "name": "TikTok MCP Service",
-            "version": "1.6.0",
-            "description": "A Model Context Protocol service for searching TikTok videos"
+            "version": "1.6.0"
         }
     }
     return json.dumps(status, indent=2), "application/json"
@@ -108,64 +168,131 @@ Would you like me to:
 Please specify which single-word hashtags you'd like to explore!"""
 
 @mcp.tool()
-async def search_videos(search_terms: List[str], count: int = 30) -> str:
+async def search_videos(search_terms: List[str], count: int = 30) -> Dict[str, Any]:
     """Search for TikTok videos based on search terms"""
+    
+    # Create results structure
+    results = {}
+    logs = []
+    errors = {}
+    transformations = {}
     
     # Limit the count to a reasonable number
     count = min(count, 15)  # Cap at 15 videos max
     
+    # Add a log capture handler
+    class LogCapture(logging.Handler):
+        def emit(self, record):
+            logs.append(self.format(record))
+    
+    log_capture = LogCapture()
+    log_capture.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    logger.addHandler(log_capture)
+    
     try:
-        all_videos = []
-        
-        for term in search_terms:
+        for original_term in search_terms:
             try:
-                # Clean the term - ensure it has a hashtag prefix
-                if not term.startswith('#'):
-                    term = f"#{term.lstrip('#')}"
-                
-                logger.info(f"Searching for term: {term}")
-                
-                # First try HTTP method if API initialization failed
+                # Try a very quick API attempt first
                 videos = []
-                if not tiktok_client.api:
-                    logger.info(f"Using HTTP fallback for search term: {term}")
-                    videos = await tiktok_client.search_videos_http(term, count=min(10, count))
+                logger.info(f"Attempting quick API search for '{original_term}'")
+                try:
+                    # Only give the API a very short time to respond
+                    # since we know it's likely to fail
+                    videos = await asyncio.wait_for(
+                        tiktok_client.search_videos_http(original_term, count),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.info("API search timed out, moving to mock data")
+                except Exception as e:
+                    logger.info(f"API search failed: {str(e)}")
                 
-                # If HTTP method failed or API is initialized, try the API method
+                # If no videos found, use mock data
                 if not videos:
-                    videos = await tiktok_client.search_videos(term, count=min(10, count))
-                
-                # Process the videos
-                processed = []
-                for video in videos:
-                    video_id = video.get('id', '')
-                    author = video.get('author', {}).get('uniqueId', '')
+                    logger.warning(f"No API results for '{original_term}', using mock data")
+                    mock_videos = await tiktok_client.get_mock_search_results(original_term, count)
+                    results[original_term] = process_videos(mock_videos)
+                    logger.info(f"Using {len(results[original_term])} mock videos for term '{original_term}'")
                     
-                    processed.append({
-                        'url': f"https://www.tiktok.com/@{author}/video/{video_id}",
-                        'description': video.get('desc', '')[:100] + ('...' if len(video.get('desc', '')) > 100 else ''),
-                        'author': video.get('author', {}).get('nickname', ''),
-                        'views': str(video.get('stats', {}).get('playCount', 0)),
-                        'likes': str(video.get('stats', {}).get('diggCount', 0))
-                    })
-                
-                all_videos.extend(processed)
-                logger.info(f"Found {len(processed)} videos for term '{term}'")
+                    # Add note that these are mock results
+                    transformations[original_term] = {
+                        "note": "Using simulated results. TikTok API restrictions may be preventing real search results."
+                    }
+                else:
+                    # Process the videos if found
+                    results[original_term] = process_videos(videos)
+                    logger.info(f"Found {len(results[original_term])} real videos for term '{original_term}'")
                 
             except Exception as e:
-                logger.error(f"Error searching for term '{term}': {str(e)}")
-                continue
+                logger.error(f"Error searching for term '{original_term}': {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                errors[original_term] = {
+                    'error': str(e),
+                    'type': str(type(e).__name__)
+                }
+                
+                # Still try to provide mock results even after an error
+                try:
+                    mock_videos = await tiktok_client.get_mock_search_results(original_term, count)
+                    results[original_term] = process_videos(mock_videos)
+                    transformations[original_term] = {
+                        "note": "Using simulated results after API error. TikTok API restrictions may be preventing real search results."
+                    }
+                except Exception as mock_error:
+                    logger.error(f"Mock data generation also failed: {str(mock_error)}")
+                    results[original_term] = []
         
-        # Take only the requested number of videos
-        all_videos = all_videos[:count]
+        # Return the response
+        response = {
+            "results": results,
+            "errors": errors,
+            "transformations": transformations,
+            "video_count": sum(len(videos) for videos in results.values()),
+            "api_status": "limited_access",
+            "notice": "TikTok is currently limiting API access. Some results may be simulated."
+        }
         
-        # Format the results as JSON string
-        return json.dumps(all_videos, indent=2)
+        return response
         
     except Exception as e:
-        error_msg = f"Error in search_videos: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
+        logger.error(f"Error in search_videos: {str(e)}")
+        return {
+            "error": f"Search failed: {str(e)}",
+            "logs": logs
+        }
+    finally:
+        logger.removeHandler(log_capture)
+
+def process_videos(videos):
+    """Helper function to process videos consistently"""
+    processed_videos = []
+    for video in videos:
+        video_id = video.get('id', '')
+        author = video.get('author', {}).get('uniqueId', '')
+        if not author and '_' in video_id:
+            author = video_id.split('_')[0]
+        
+        processed_videos.append({
+            'url': f"https://www.tiktok.com/@{author}/video/{video_id}",
+            'description': video.get('desc', '')[:100] + ('...' if len(video.get('desc', '')) > 100 else ''),
+            'author': video.get('author', {}).get('nickname', ''),
+            'stats': {
+                'views': str(video.get('stats', {}).get('playCount', 0)),
+                'likes': str(video.get('stats', {}).get('diggCount', 0)),
+                'shares': str(video.get('stats', {}).get('shareCount', 0)),
+                'comments': str(video.get('stats', {}).get('commentCount', 0))
+            }
+        })
+    return processed_videos
+
+@mcp.tool()
+async def search_videos_by_topic(search_terms: List[str], count: int = 30) -> Dict[str, Any]:
+    """Search for TikTok videos on specific topics"""
+    # Call the original function and convert the JSON string back to a dict if needed
+    result = await search_videos(search_terms, count)
+    if isinstance(result, str):
+        return json.loads(result)
+    return result
 
 @mcp.tool()
 async def get_trending_videos(count: int = 30) -> Dict[str, Any]:
@@ -223,83 +350,6 @@ async def get_trending_videos(count: int = 30) -> Dict[str, Any]:
         }
     finally:
         # Remove our custom handler
-        logger.removeHandler(log_capture)
-
-@mcp.tool()
-async def search_videos_by_topic(topic: str, count: int = 10) -> Dict[str, Any]:
-    """
-    Search for TikTok videos related to a specific topic or interest.
-    
-    Args:
-        topic: The topic, interest, or hashtag to search for
-        count: Maximum number of videos to return (default: 10)
-        
-    Returns:
-        List of relevant TikTok videos with metadata
-    """
-    logs = []
-    errors = {}
-    
-    # Add logging capture similar to your get_trending_videos function
-    class LogCapture(logging.Handler):
-        def emit(self, record):
-            logs.append(self.format(record))
-    
-    log_capture = LogCapture()
-    log_capture.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-    logger.addHandler(log_capture)
-    
-    try:
-        # Ensure API is initialized
-        if not tiktok_client.api:
-            await tiktok_client._init_api()
-            await asyncio.sleep(2)
-            
-        # Format hashtag if needed
-        search_term = topic.strip()
-        if not search_term.startswith('#') and not ' ' in search_term:
-            search_term = f"#{search_term}"
-            
-        # Search videos by hashtag/topic
-        videos = await tiktok_client.search_by_keywords(search_term, count)
-        
-        # Process results
-        processed_videos = []
-        for video in videos:
-            processed_videos.append({
-                'url': f"https://www.tiktok.com/@{video.get('author', {}).get('uniqueId', '')}/video/{video.get('id')}",
-                'description': video.get('desc', ''),
-                'author': video.get('author', {}).get('uniqueId', ''),
-                'stats': {
-                    'views': video.get('stats', {}).get('playCount', 0),
-                    'likes': video.get('stats', {}).get('diggCount', 0),
-                    'shares': video.get('stats', {}).get('shareCount', 0),
-                    'comments': video.get('stats', {}).get('commentCount', 0)
-                },
-                'created_at': video.get('createTime', 0)
-            })
-            
-        logger.info(f"Found {len(processed_videos)} videos for topic '{topic}'")
-        return {
-            "topic": topic,
-            "videos": processed_videos,
-            "logs": logs,
-            "errors": errors
-        }
-        
-    except Exception as e:
-        logger.error(f"Error searching for videos: {str(e)}")
-        errors["search"] = {
-            "error": str(e),
-            "type": str(type(e).__name__)
-        }
-        return {
-            "topic": topic,
-            "videos": [],
-            "logs": logs,
-            "errors": errors
-        }
-    finally:
         logger.removeHandler(log_capture)
 
 @mcp.tool()
@@ -1014,6 +1064,32 @@ if __name__ == "__main__":
     print(f"PYTHONPATH: {sys.path}", file=sys.stderr)
     print(f"Environment variables: {os.environ.get('ms_token', 'Not set')}", file=sys.stderr)
     
-    # Start the MCP server with stdio transport
-    logger.info("Starting TikTok MCP Service")
-    mcp.run(transport='stdio') 
+    # Run health check at startup
+    asyncio.run(run_startup_health_check())
+    
+    # Test search directly
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        async def run_test():
+            print("Running test search...")
+            client = TikTokClient()
+            await client._init_api()
+            
+            test_terms = ["#viral", "#tariffs", "trump"]
+            for term in test_terms:
+                print(f"\nTesting search for '{term}':")
+                videos = await client.search_videos_http(term, count=5)
+                print(f"HTTP search found {len(videos)} videos")
+                
+                if client.api:
+                    api_videos = await client.search_videos(term, count=5)
+                    print(f"API search found {len(api_videos)} videos")
+                
+                # Try the SIGI method
+                sigi_videos = await client.search_videos_sigi(term, count=5)
+                print(f"SIGI search found {len(sigi_videos)} videos")
+        
+        asyncio.run(run_test())
+    else:
+        # Start the MCP server with stdio transport
+        logger.info("Starting TikTok MCP Service")
+        mcp.run(transport='stdio') 
