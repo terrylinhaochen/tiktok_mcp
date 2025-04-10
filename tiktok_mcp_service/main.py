@@ -1,7 +1,23 @@
 from mcp.server.fastmcp import FastMCP
 import logging
 from typing import Dict, Any, List, Tuple
-from tiktok_mcp_service.tiktok_client import TikTokClient
+import sys
+import os
+from dotenv import load_dotenv
+
+# Add the project directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import after path modification
+try:
+    from tiktok_client import TikTokClient
+except ImportError:
+    # Try alternate import path
+    from tiktok_mcp_service.tiktok_client import TikTokClient
+
+# Load environment variables
+load_dotenv()
+
 import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -264,16 +280,13 @@ async def get_trending_videos(count: int = 30) -> Dict[str, Any]:
         # Remove our custom handler
         logger.removeHandler(log_capture)
 
-def main():
-    """Start the MCP server"""
-    logger.info("Starting TikTok MCP Service (press Ctrl+C to stop)")
-    try:
-        mcp.run()
-    except KeyboardInterrupt:
-        logger.info("Shutting down TikTok MCP Service")
-    except Exception as e:
-        logger.error(f"Error running MCP server: {str(e)}")
-        raise
-
 if __name__ == "__main__":
-    main() 
+    # Print debugging info
+    print(f"Python executable: {sys.executable}", file=sys.stderr)
+    print(f"Current working directory: {os.getcwd()}", file=sys.stderr)
+    print(f"PYTHONPATH: {sys.path}", file=sys.stderr)
+    print(f"Environment variables: {os.environ.get('ms_token')[:10]}...", file=sys.stderr)
+    
+    # Start the MCP server with stdio transport
+    logger.info("Starting TikTok MCP Service")
+    mcp.run(transport='stdio') 
