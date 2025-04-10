@@ -53,179 +53,225 @@ BROWSER_CONFIGS = [
 
 class TikTokClient:
     def __init__(self):
-        # Load environment variables
-        load_dotenv()
-        
-        # Get configuration from environment
-        self.ms_token = os.environ.get("ms_token")
-        self.proxy = os.environ.get("TIKTOK_PROXY")
-        
-        # Initialize API instance
+        """Initialize the TikTok client."""
         self.api = None
-        self.last_init_time = 0
-        self.init_cooldown = 60  # Seconds to wait before reinitializing API
-        self.last_location = None
+        self.session = None
+        self.browser = None
+        
+        # Get environment variables
+        self.ms_token = os.environ.get('ms_token')
+        self.proxy = os.environ.get('TIKTOK_PROXY')
         
         if not self.ms_token:
-            logger.warning("No ms_token found in environment. This may cause bot detection issues.")
-
-    def _get_random_location(self) -> Dict[str, Any]:
-        """Get a location near the last used location for realistic movement patterns"""
-        global _last_location_index
-        
-        if self.last_location is None:
-            # First request - start at base location
-            self.last_location = NYC_LOCATIONS[0]
-            _last_location_index = 0
-            return self.last_location
-            
-        # Get indices of nearby locations (within 1-2 positions in the list)
-        current_idx = _last_location_index
-        possible_indices = [
-            i for i in range(len(NYC_LOCATIONS))
-            if abs(i - current_idx) <= 1  # Only move to adjacent locations
-        ]
-        
-        # Select a nearby location
-        new_idx = random.choice(possible_indices)
-        _last_location_index = new_idx
-        self.last_location = NYC_LOCATIONS[new_idx]
-        
-        logger.info(f"Moving to nearby location: {self.last_location['name']}")
-        return self.last_location
-
-    def _get_random_browser_config(self) -> Dict[str, Any]:
-        """Get a random browser configuration"""
-        config = random.choice(BROWSER_CONFIGS)
-        logger.info(f"Selected browser: {config['browser']}")
-        return config
-
-    async def _init_api(self) -> None:
-        """Initialize or reinitialize the API with proper error handling"""
-        current_time = time.time()
-        
-        # Don't reinitialize too frequently
-        if self.api and (current_time - self.last_init_time) < self.init_cooldown:
-            return
-            
+            logger.warning("ms_token not found in environment variables. TikTok API functionality will be limited.")
+    
+    async def _init_api(self, max_retries=3):
+        """Initialize the TikTokApi instance with retry mechanism."""
         try:
-            if self.api:
-                await self.api.__aexit__(None, None, None)
-            
-            # Random initial delay to appear more human-like
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            # Import here to avoid startup issues if TikTokApi isn't installed
+            from TikTokApi import TikTokApi
             
             logger.info("Creating new TikTokApi instance...")
             self.api = TikTokApi()
-            await self.api.__aenter__()
             logger.info("TikTokApi instance created successfully")
             
-            # Get random location and browser config
-            location = self._get_random_location()
-            browser_config = self._get_random_browser_config()
-            
-            # Create sessions with randomized parameters
-            session_params = {
-                "ms_tokens": [self.ms_token] if self.ms_token else None,
-                "num_sessions": 1,
-                "sleep_after": random.randint(15, 20),  # Increased sleep time
-                "browser": browser_config["browser"],
-                "headless": False,
-                "timeout": random.randint(180000, 240000),  # Increased timeout to 3-4 minutes
-                "context_options": {
-                    "viewport": browser_config["viewport"],
-                    "user_agent": browser_config["user_agent"],
-                    "locale": "en-US",
-                    "timezone_id": "America/New_York",
-                    "geolocation": {
-                        "latitude": location["latitude"],
-                        "longitude": location["longitude"],
-                        "accuracy": location["accuracy"]
-                    },
-                    "permissions": ["geolocation"],
-                    "has_touch": random.choice([True, False]),  # Randomize touch capability
-                    "color_scheme": random.choice(["light", "dark"]),  # Randomize color scheme
-                    "reduced_motion": random.choice(["reduce", "no-preference"])  # Randomize motion preference
-                }
-            }
-
+            # Initialize session with ms_token
             logger.info("Creating TikTok session...")
-            await self.api.create_sessions(**session_params)
-            # Add extra wait time after session creation
-            await asyncio.sleep(random.uniform(8.0, 12.0))  # Increased wait time
-            logger.info("TikTok session created successfully")
+            
+            # Skip version check since pkg_resources is not available
+            logger.info("TikTokApi version check skipped (pkg_resources not available)")
+            
+            # Use the most compatible parameter set
+            try:
+                if self.ms_token:
+                    self.session = await self.api.create_sessions(
+                        ms_tokens=[self.ms_token],
+                        num_sessions=1,
+                        headless=True
+                    )
+                else:
+                    self.session = await self.api.create_sessions(
+                        num_sessions=1,
+                        headless=True
+                    )
+                
+                logger.info("TikTok session created successfully")
+            except TypeError as e:
+                # If there's a TypeError (like unexpected argument), try with fewer parameters
+                logger.warning(f"Error with create_sessions parameters: {e}")
+                logger.info("Falling back to simpler create_sessions call")
+                
+                self.session = await self.api.create_sessions(
+                    num_sessions=1,
+                    headless=True
+                )
+                logger.info("TikTok session created with fallback parameters")
 
+            # Apply stealth techniques
             logger.info("Applying stealth techniques to session...")
-            for session in self.api.sessions:
-                # Additional anti-detection scripts
-                await session.page.add_init_script("""
-                    // Randomize hardware concurrency
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {
-                        value: """ + str(random.randint(4, 16)) + """
-                    });
-
-                    // Randomize device memory
-                    Object.defineProperty(navigator, 'deviceMemory', {
-                        value: """ + str(random.choice([4, 8, 16])) + """
-                    });
-
-                    // Add realistic plugins count
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            const plugins = [];
-                            const count = """ + str(random.randint(3, 8)) + """;
-                            for (let i = 0; i < count; i++) {
-                                plugins.push({
-                                    name: 'Plugin ' + i,
-                                    filename: 'plugin' + i + '.dll',
-                                    description: 'Generic Plugin ' + i,
-                                    length: 1
-                                });
-                            }
-                            return plugins;
-                        }
-                    });
-
-                    // Add realistic languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en']
-                    });
-
-                    // Randomize connection type
-                    Object.defineProperty(navigator, 'connection', {
-                        get: () => ({
-                            effectiveType: """ + json.dumps(random.choice(['4g', '5g'])) + """,
-                            rtt: """ + str(random.randint(50, 150)) + """,
-                            downlink: """ + str(random.uniform(5, 15)) + """,
-                            saveData: false
-                        })
-                    });
-
-                    // Add realistic WebGL info
-                    const getParameter = WebGLRenderingContext.prototype.getParameter;
-                    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                        if (parameter === 37445) {
-                            return 'Intel Inc.';
-                        }
-                        if (parameter === 37446) {
-                            return 'Intel(R) Iris(TM) Plus Graphics';
-                        }
-                        return getParameter.apply(this, arguments);
-                    };
-                """)
-
-                # Add random delay between script applications
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-
-            self.last_init_time = time.time()
-            logger.info("Session initialization complete")
+            try:
+                from playwright_stealth import stealth_async
+                if self.session:
+                    for session in self.session:
+                        self.browser = session.browser
+                        if self.browser:
+                            for context in self.browser.contexts:
+                                for page in context.pages:
+                                    await stealth_async(page)
+                    logger.info("Session initialization complete")
+                else:
+                    logger.warning("No session object available to apply stealth techniques")
+            except Exception as stealth_error:
+                logger.warning(f"Could not apply stealth techniques: {stealth_error}")
+            
+            return self.api
+            
+        except Exception as e:
+            logger.error(f"Error initializing TikTok API: {e}")
+            logger.error(f"Error type: {type(e)}")
+            
+            if max_retries > 0:
+                logger.info(f"Retrying initialization ({max_retries} attempts left)...")
+                await asyncio.sleep(1)  # Wait between retries
+                return await self._init_api(max_retries=max_retries-1)
+            else:
+                logger.error("Maximum retries reached. Failed to initialize TikTok API.")
+                return None
+    
+    async def close(self):
+        """Close the TikTok session and browser."""
+        try:
+            if self.browser:
+                await self.browser.close()
+                logger.info("Browser closed successfully")
+            
+            if self.session:
+                for session in self.session:
+                    await session.close()
+                logger.info("TikTok session closed successfully")
+                
+        except Exception as e:
+            logger.error(f"Error closing TikTok session: {e}")
+    
+    async def search_videos(self, search_term: str, count: int = 30) -> List[Dict[str, Any]]:
+        """
+        Search for TikTok videos by keyword or hashtag.
+        Handles both search_by_keywords and search_for_hashtag based on input.
+        """
+        try:
+            # Initialize API if needed
+            if not self.api:
+                await self._init_api()
+                if not self.api:
+                    raise RuntimeError("Failed to initialize TikTok API")
+            
+            # Determine if this is a hashtag search
+            is_hashtag = search_term.startswith('#')
+            clean_term = search_term.lstrip('#')
+            
+            logger.info(f"Searching for {'hashtag' if is_hashtag else 'keyword'}: {clean_term}")
+            
+            if is_hashtag:
+                # Get hashtag info first
+                logger.info(f"Getting hashtag info for #{clean_term}...")
+                try:
+                    hashtag_info = await self.api.hashtag(name=clean_term).info()
+                    logger.info(f"Hashtag info received: {json.dumps(hashtag_info, indent=2)}")
+                    
+                    # Wait a moment before fetching videos to avoid rate limiting
+                    logger.info("Waiting before fetching videos...")
+                    await asyncio.sleep(1.5)
+                    
+                    # Now fetch videos for this hashtag
+                    logger.info(f"Fetching videos for hashtag #{clean_term}...")
+                    hashtag_id = hashtag_info.get('challengeInfo', {}).get('challenge', {}).get('id')
+                    
+                    if not hashtag_id:
+                        logger.error("Could not find hashtag ID in the response")
+                        return []
+                    
+                    logger.info(f"Got hashtag ID: {hashtag_id}")
+                    
+                    # Fetch videos with the hashtag
+                    videos = []
+                    challenge = self.api.challenge(id=hashtag_id)
+                    
+                    # Get videos and convert to dict
+                    async for video in challenge.videos(count=count):
+                        videos.append(video.as_dict)
+                    
+                    logger.info(f"Successfully retrieved {len(videos)} videos for hashtag #{clean_term}")
+                    return videos
+                    
+                except Exception as e:
+                    logger.error(f"Error in hashtag search: {str(e)}")
+                    return []
+            
+            else:
+                # Regular keyword search
+                videos = []
+                logger.info(f"Searching for keyword: {clean_term}")
+                
+                # Use the search API
+                search_obj = self.api.search.videos(clean_term, count=count)
+                async for video in search_obj:
+                    videos.append(video.as_dict)
+                
+                logger.info(f"Successfully retrieved {len(videos)} videos for keyword search: {clean_term}")
+                return videos
+                
+        except Exception as e:
+            logger.error(f"Error searching videos: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            return []
+    
+    async def get_trending(self, count: int = 30) -> List[Dict[str, Any]]:
+        """Get trending TikTok videos."""
+        try:
+            # Initialize API if needed
+            if not self.api:
+                await self._init_api()
+                if not self.api:
+                    raise RuntimeError("Failed to initialize TikTok API")
+            
+            logger.info(f"Fetching {count} trending videos...")
+            
+            # Get trending videos
+            videos = []
+            async for video in self.api.trending.videos(count=count):
+                videos.append(video.as_dict)
+            
+            logger.info(f"Successfully retrieved {len(videos)} trending videos")
+            return videos
 
         except Exception as e:
-            logger.error(f"Error initializing API: {str(e)}")
-            if self.api:
-                await self.api.__aexit__(None, None, None)
-            self.api = None
-            raise
+            logger.error(f"Error fetching trending videos: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            return []
+    
+    async def get_hashtag_info(self, hashtag: str) -> Dict[str, Any]:
+        """Get information about a specific hashtag."""
+        try:
+            # Initialize API if needed
+            if not self.api:
+                await self._init_api()
+                if not self.api:
+                    raise RuntimeError("Failed to initialize TikTok API")
+            
+            # Format hashtag if needed
+            clean_hashtag = hashtag.strip()
+            if clean_hashtag.startswith('#'):
+                clean_hashtag = clean_hashtag[1:]
+            
+            logger.info(f"Getting hashtag info for: #{clean_hashtag}")
+            
+            hashtag_info = await self.api.hashtag(name=clean_hashtag).info()
+            return hashtag_info
+            
+        except Exception as e:
+            logger.error(f"Error getting hashtag info: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            return {}
 
     @backoff.on_exception(
         backoff.expo,
@@ -268,9 +314,10 @@ class TikTokClient:
             raise
         return videos
 
-    async def search_videos(self, term: str, count: int = 30) -> List[Dict[str, Any]]:
-        """Search for videos by hashtag or keyword"""
-        videos = []
+    async def search_by_keywords(self, keywords, count=30):
+        """Search TikTok for videos by keywords or hashtags"""
+        logger.info(f"Searching by keywords: {keywords}")
+        
         try:
             # Initialize API if needed
             if not self.api:
@@ -278,80 +325,82 @@ class TikTokClient:
                 if not self.api:
                     raise RuntimeError("Failed to initialize TikTok API")
             
-            # Remove # if present
-            term = term.lstrip('#')
-            logger.info(f"Searching for term: {term}")
-            
-            try:
-                # Get hashtag info first
-                logger.info(f"Getting hashtag info for #{term}...")
-                hashtag = await self.api.hashtag(name=term).info()
-                logger.info(f"Hashtag info received: {json.dumps(hashtag, indent=2)}")
+            # Format hashtag if needed
+            search_term = keywords.strip()
+            if search_term.startswith('#'):
+                tag = search_term[1:]  # Remove the # for API call
+                logger.info(f"Searching for hashtag: #{tag}")
                 
-                # Increased delay between info and videos
-                logger.info("Waiting before fetching videos...")
-                await asyncio.sleep(5)  # Increased from 2 to 5
-                
-                # Get videos for the hashtag
-                logger.info(f"Fetching videos for hashtag #{term}...")
-                hashtag_id = hashtag["challengeInfo"]["challenge"]["id"]
-                logger.info(f"Got hashtag ID: {hashtag_id}")
-                
-                # Make direct request to video listing endpoint
-                raw_response = await self.api.make_request(
-                    url="https://www.tiktok.com/api/challenge/item_list/",
-                    params={
-                        "challengeID": hashtag_id,
-                        "count": count,
-                        "cursor": 0
-                    }
-                )
-                logger.info(f"Raw video listing response: {json.dumps(raw_response, indent=2)}")
-                
-                # Process videos from response
-                videos = []
-                for item in raw_response.get("itemList", []):
-                    videos.append(self.api.video(data=item).as_dict)
+                try:
+                    # First try hashtag search
+                    videos = []
                     
-                logger.info(f"Successfully retrieved {len(videos)} videos for #{term}")
-                return videos
-
-            except Exception as e:
-                logger.error(f"Error fetching videos for #{term}: {e}")
-                logger.error(f"Error type: {type(e)}")
-                logger.error(f"Error args: {e.args}")
-                raise
+                    # Get hashtag info
+                    hashtag = await self.api.hashtag(name=tag).info()
+                    logger.info(f"Found hashtag info with id: {hashtag.get('challengeInfo', {}).get('challenge', {}).get('id')}")
+                    
+                    # Get videos for the hashtag
+                    hashtag_videos = self.api.hashtag(id=hashtag.get('challengeInfo', {}).get('challenge', {}).get('id'))
+                    
+                    # Collect videos
+                    async for video in hashtag_videos.videos(count=count):
+                        videos.append(video.as_dict)
+                        if len(videos) >= count:
+                            break
+                    
+                    logger.info(f"Found {len(videos)} videos for hashtag #{tag}")
+                    return videos
+                    
+                except Exception as e:
+                    logger.error(f"Error in hashtag search: {str(e)}")
+                    # Fall back to keyword search
+                    logger.info(f"Falling back to keyword search for: {search_term}")
+            
+            # Use keyword search
+            logger.info(f"Performing keyword search for: {search_term}")
+            videos = []
+            
+            async for video in self.api.search.videos(search_term, count=count):
+                videos.append(video.as_dict)
+                if len(videos) >= count:
+                    break
                 
-        except Exception as e:
-            logger.error(f"Failed to search for videos: {e}")
-            logger.error(f"Error type: {type(e)}")
-            logger.error(f"Error args: {e.args}")
-            raise
-
-    async def get_user_info(self, username: str) -> Dict[str, Any]:
-        """Get user information"""
-        try:
-            # Initialize API if needed
-            if not self.api:
-                await self._init_api()
-                if not self.api:
-                    raise RuntimeError("Failed to initialize TikTok API")
-            
-            # Get user info
-            user = await self.api.user(username).info()
-            if isinstance(user, dict):
-                return user
-            return user.as_dict
+            logger.info(f"Found {len(videos)} videos for keyword search: {search_term}")
+            return videos
             
         except Exception as e:
-            logger.error(f"Failed to get user info: {e}")
-            raise
+            logger.error(f"Search by keywords failed: {str(e)}")
+            logger.error(f"Error type: {type(e).__name__}")
+            return []  # Return empty list instead of raising to make function more robust
 
-    async def close(self):
-        """Cleanup resources"""
-        if self.api:
-            try:
-                await self.api.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"Error closing API: {e}")
-            self.api = None 
+    async def _ensure_api_initialized(self):
+        """Ensure API is initialized"""
+        if not self.api:
+            await self._init_api()
+        await asyncio.sleep(2)  # Wait for API to be fully ready
+
+    async def _handle_api_error(self, func_name, e):
+        # Implement exponential backoff logic here
+        logger.error(f"Error in {func_name}: {str(e)}")
+        # Placeholder for exponential backoff logic
+        await asyncio.sleep(1)  # Wait between retries
+        return await self._init_api()
+
+    # Alternative approach using direct HTTP requests
+    async def search_videos_http(self, search_term, count=30):
+        """Search for videos using direct HTTP requests instead of browser automation"""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Cookie": f"msToken={self.ms_token}" if self.ms_token else ""
+        }
+        
+        # Use TikTok's search API directly
+        async with aiohttp.ClientSession() as session:
+            search_url = f"https://www.tiktok.com/api/search/item/?aid=1988&keyword={search_term}&count={count}"
+            async with session.get(search_url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("items", [])
+                else:
+                    return [] 
