@@ -1,5 +1,7 @@
 # TikTok MCP Service
 
+[![smithery badge](https://smithery.ai/badge/@terrylinhaochen/tiktok_mcp)](https://smithery.ai/server/@terrylinhaochen/tiktok_mcp)
+
 A Model Context Protocol service for TikTok video discovery and metadata extraction. This service provides a robust interface for searching TikTok videos by hashtags and retrieving trending content, with built-in anti-detection measures and error handling.
 
 ## Features
@@ -23,6 +25,15 @@ TIKTOK_PROXY=your_proxy_url    # Optional proxy configuration
 
 ## Installation and Setup
 
+### Installing via Smithery
+
+To install TikTok Video Search for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@terrylinhaochen/tiktok_mcp):
+
+```bash
+npx -y @smithery/cli install @terrylinhaochen/tiktok_mcp --client claude
+```
+
+### Installing Manually
 ```bash
 # Install dependencies
 poetry install
