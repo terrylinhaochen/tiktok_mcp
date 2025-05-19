@@ -1,0 +1,52 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required: []
+    properties:
+      msToken:
+        type: string
+        description: TikTok ms_token environment variable for API access
+      tiktokProxy:
+        type: string
+        description: Proxy URL for TikTok requests
+      openaiApiKey:
+        type: string
+        description: OpenAI API key for content analysis (optional)
+      port:
+        type: number
+        default: 0
+        description: Port number override (unused for stdio)
+      logLevel:
+        type: string
+        default: info
+        description: Logging level
+      enableHealthCheck:
+        type: boolean
+        default: false
+        description: Run startup health check logs on stderr
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => {
+      const env = {};
+      if (config.msToken) env.ms_token = config.msToken;
+      if (config.tiktokProxy) env.TIKTOK_PROXY = config.tiktokProxy;
+      if (config.openaiApiKey) env.OPENAI_API_KEY = config.openaiApiKey;
+      if (config.logLevel) env.LOG_LEVEL = config.logLevel;
+      if (config.enableHealthCheck) env.ENABLE_HEALTH_CHECK = String(config.enableHealthCheck);
+      return {
+        command: 'python',
+        args: ['-m', 'tiktok_mcp_service.main'],
+        env
+      };
+    }
+  exampleConfig:
+    msToken: your_tiktok_ms_token
+    tiktokProxy: http://proxy.example.com:8080
+    openaiApiKey: sk-XXXX
+    logLevel: info
+    enableHealthCheck: false
