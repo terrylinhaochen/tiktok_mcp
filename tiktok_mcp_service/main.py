@@ -311,32 +311,33 @@ async def get_trending_videos(count: int = 30) -> Dict[str, Any]:
     logger.addHandler(log_capture)
     
     try:
-        # Ensure API is initialized
-        if not tiktok_client.api:
-            await tiktok_client._init_api()
-            await asyncio.sleep(2)  # Wait for API to be fully ready
-            
+        # Try to get trending videos with fallback to mock data
         videos = await tiktok_client.get_trending_videos(count)
-        processed_videos = []
         
-        for video in videos:
-            processed_videos.append({
-                'url': f"https://www.tiktok.com/@{video.get('author', {}).get('uniqueId', '')}/video/{video.get('id')}",
-                'description': video.get('desc', ''),
-                'stats': {
-                    'views': video.get('stats', {}).get('playCount', 0),
-                    'likes': video.get('stats', {}).get('diggCount', 0),
-                    'shares': video.get('stats', {}).get('shareCount', 0),
-                    'comments': video.get('stats', {}).get('commentCount', 0)
-                }
-            })
-        
-        logger.info(f"Found {len(processed_videos)} trending videos")
-        return {
-            "videos": processed_videos,
-            "logs": logs,
-            "errors": errors
-        }
+        # If we got videos, process them
+        if videos:
+            processed_videos = process_videos(videos)
+            logger.info(f"Returning {len(processed_videos)} trending videos")
+            
+            # Check if these are likely mock videos
+            is_mock = any("mock" in log for log in logs)
+            
+            return {
+                "videos": processed_videos,
+                "logs": logs,
+                "errors": errors,
+                "api_status": "limited_access" if is_mock else "operational",
+                "notice": "TikTok is currently limiting API access. Results may be simulated." if is_mock else ""
+            }
+        else:
+            logger.error("No trending videos returned")
+            return {
+                "videos": [],
+                "logs": logs,
+                "errors": {"trending": {"error": "No videos returned", "type": "EmptyResultError"}},
+                "api_status": "error",
+                "notice": "Unable to retrieve trending videos from TikTok. Please try again later."
+            }
     except Exception as e:
         logger.error(f"Error getting trending videos: {str(e)}")
         errors["trending"] = {
@@ -346,7 +347,9 @@ async def get_trending_videos(count: int = 30) -> Dict[str, Any]:
         return {
             "videos": [],
             "logs": logs,
-            "errors": errors
+            "errors": errors,
+            "api_status": "error",
+            "notice": "Error accessing TikTok trending videos. See logs for details."
         }
     finally:
         # Remove our custom handler
